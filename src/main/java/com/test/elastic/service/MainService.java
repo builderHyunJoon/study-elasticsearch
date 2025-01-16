@@ -16,9 +16,15 @@ import org.elasticsearch.search.SearchHit;
 import org.elasticsearch.search.builder.SearchSourceBuilder;
 import org.springframework.stereotype.Service;
 
+import java.io.File;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Slf4j
 @Service
@@ -31,21 +37,25 @@ public class MainService {
     public List<ScriptDto> setLessonInfo() throws IOException {
         List<ScriptDto> scriptDtoList = new ArrayList<>();
 
-        List<SummarizedLessonDto> summarizedJhsLessonDtoList = getAllSummarizedJhsLesson();
-        for(SummarizedLessonDto summarizedJhsLessonDto : summarizedJhsLessonDtoList) {
-            List<OriginLessonDto> originJhsLessonDtoList = getAllOriginJhsLessons(summarizedJhsLessonDto.getLesson_id_k());
-            ScriptDto scriptDto = OriginLessonToScript(summarizedJhsLessonDto, originJhsLessonDtoList.get(0));
-            log.info("jhs scriptDto :{}", scriptDto);
-            scriptDtoList.add(scriptDto);
-        }
+//        List<SummarizedLessonDto> summarizedJhsLessonDtoList = getAllSummarizedJhsLesson();
+//        for(SummarizedLessonDto summarizedJhsLessonDto : summarizedJhsLessonDtoList) {
+//            List<OriginLessonDto> originJhsLessonDtoList = getAllOriginJhsLessons(summarizedJhsLessonDto.getLesson_id_k());
+//            ScriptDto scriptDto = OriginLessonToScript(summarizedJhsLessonDto, originJhsLessonDtoList.get(0));
+//            scriptDto.setORIGIN_SCRIPT(getOriginScriptContent(scriptDto.getLECT_ID()));
+//            //log.info("jhs scriptDto :{}", scriptDto);
+//            scriptDtoList.add(scriptDto);
+//        }
 
         List<SummarizedLessonDto> summarizedHscLessonDtoList = getAllSummarizedHscLesson();
         for(SummarizedLessonDto summarizedHscLessonDto : summarizedHscLessonDtoList) {
             List<OriginLessonDto> originHscLessonDtoList = getAllOriginHscLessons(summarizedHscLessonDto.getLesson_id_k());
             ScriptDto scriptDto = OriginLessonToScript(summarizedHscLessonDto, originHscLessonDtoList.get(0));
-            log.info("hsc scriptDto :{}", scriptDto);
+            scriptDto.setORIGIN_SCRIPT(getOriginScriptContent(scriptDto.getLECT_ID()));
+            //log.info("hsc scriptDto :{}", scriptDto);
             scriptDtoList.add(scriptDto);
         }
+
+
         return scriptDtoList;
     }
 
@@ -157,4 +167,38 @@ public class MainService {
                 .build();
     }
 
+
+    public String getOriginScriptContent(String code) throws IOException {
+        String directoryPath = ""; // 파일 경로
+        File directory = new File(directoryPath);
+        String content = null;
+        // 파일 이름 패턴
+        Pattern pattern = Pattern.compile("_[A-Z0-9]+\\.smi"); // "_" 다음에 영문 대문자 또는 숫자, ".smi"로 끝나는 패턴
+
+        if (directory.isDirectory()) {
+            for (File file : directory.listFiles()) {
+                String fileName = file.getName();
+                Matcher matcher = pattern.matcher(fileName);
+
+                if (matcher.find() && fileName.contains("_" + code + ".smi")) { // 코드와 일치하는 파일 찾기
+
+                    try {
+                        content = Files.readString(file.toPath(), StandardCharsets.UTF_8); // 파일 내용 읽어오기
+                        content = content.replaceAll("(?s)<!--.*?-->", "").replaceAll("<.*?>", "").replaceAll("&.*?;", "");
+                        content = content.replaceAll("[\\r\\n]+", " ");
+                        content = content.replaceAll("\"", "'");
+                        content = content.replaceAll("\t", "");
+                        content = content.replace(",", "");
+                    } catch (Exception e) {
+                        log.info("error: {}, code: {}", e, code);
+                    }
+                }
+            }
+        }
+        if(StringUtils.isEmpty(content)) {
+            log.info("no origin file... code: {}", code);
+        }
+
+        return content; // 파일을 찾지 못한 경우 null 반환
+    }
 }

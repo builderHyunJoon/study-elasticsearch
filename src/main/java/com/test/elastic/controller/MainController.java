@@ -32,11 +32,11 @@ public class MainController {
     public ResponseEntity<byte[]> downloadCsv() throws IOException {
         List<ScriptDto> scriptDtoList = mainService.setLessonInfo();
 
-        try (StringWriter stringWriter = new StringWriter();
-             CSVWriter csvWriter = new CSVWriter(stringWriter)) {
+        StringWriter stringWriter = new StringWriter();
+        CSVWriter csvWriter = new CSVWriter(stringWriter);
 
             // CSV 헤더 작성
-            String[] header = {"FMY_SITE_DS_CD", "COURSE_ID", "LECT_ID", "SUMRY_CNTN", "PRBM_CAT_ID", "USE_YN", "DELT_YN"};
+            String[] header = {"FMY_SITE_DS_CD", "COURSE_ID", "LECT_ID", "ORIGIN_SCRIPT", "SUMRY_CNTN", "PRBM_CAT_ID", "USE_YN", "DELT_YN"};
             csvWriter.writeNext(header);
 
             // 데이터 작성
@@ -45,6 +45,7 @@ public class MainController {
                         scriptDto.getFMY_SITE_DS_CD(),
                         scriptDto.getCOURSE_ID(),
                         scriptDto.getLECT_ID(),
+                        scriptDto.getORIGIN_SCRIPT(),
                         scriptDto.getSUMRY_CNTN(),
                         scriptDto.getPRBM_CAT_ID(),
                         "Y",
@@ -62,7 +63,7 @@ public class MainController {
             headers.setCacheControl("must-revalidate, post-check=0, pre-check=0");
 
             return new ResponseEntity<>(csvBytes, headers, HttpStatus.OK);
-        }
+
     }
 
 }

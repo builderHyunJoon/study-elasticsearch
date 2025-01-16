@@ -16,6 +16,7 @@ public class ScriptDto {
     String COURSE_ID;
     String LECT_ID;
     String LECT_ITEM_ID;
+    String ORIGIN_SCRIPT;
     String SUMRY_CNTN;
     String PRBM_CAT_ID;
 }
