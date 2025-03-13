@@ -15,6 +15,8 @@ import java.util.Map;
 @AllArgsConstructor
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class OriginLessonDto {
+    String sbjt_name_kskn;
+    String lesson_name_kskn;
     String sbjt_id_k;
     String lesson_id_k;
     String index_no_l;

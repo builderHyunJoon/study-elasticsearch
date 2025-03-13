@@ -1,30 +1,33 @@
 package com.test.elastic.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.test.elastic.dto.OriginLessonDto;
-import com.test.elastic.dto.ScriptDto;
-import com.test.elastic.dto.SummarizedLessonDto;
+import com.test.elastic.dto.*;
 import io.micrometer.common.util.StringUtils;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.elasticsearch.action.search.ClearScrollRequest;
 import org.elasticsearch.action.search.SearchRequest;
 import org.elasticsearch.action.search.SearchResponse;
+import org.elasticsearch.action.search.SearchScrollRequest;
 import org.elasticsearch.client.RequestOptions;
 import org.elasticsearch.client.RestHighLevelClient;
+import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.index.query.QueryBuilders;
 import org.elasticsearch.search.SearchHit;
 import org.elasticsearch.search.builder.SearchSourceBuilder;
+import org.springframework.http.*;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestTemplate;
 
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.text.Normalizer;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 @Slf4j
 @Service
@@ -34,57 +37,254 @@ public class MainService {
     private final RestHighLevelClient prdClient;
     private final RestHighLevelClient devClient;
 
-    public List<ScriptDto> setLessonInfo() throws IOException {
-        List<ScriptDto> scriptDtoList = new ArrayList<>();
+    public List<CsvResponseDto> searchVSdata() throws Exception {
+        List<CsvResponseDto> csvResponseDtoList = new ArrayList<>();
+        List<LessonDto> summarizedLessonDtoList = getAllSummarizedLesson();
+        for(LessonDto lessonDto : summarizedLessonDtoList) {
+        List<String> textList = new ArrayList<>();
+        textList.add(lessonDto.getSummarized_script());
+            SearchRequestDto.Filter filter = new SearchRequestDto.Filter();
+            SearchRequestDto.Filter.Must must = new SearchRequestDto.Filter.Must();
+            SearchRequestDto.Filter.Must.Match match = new SearchRequestDto.Filter.Must.Match();
+            List<SearchRequestDto.Filter.Must> mustList = new ArrayList<>();
+            match.setValue(lessonDto.getLesson_id_k());
+            must.setKey("lesson_id_k");
+            must.setMatch(match);
+            mustList.add(must);
+            filter.setMust(mustList);
+            SearchRequestDto searchRequestDto = SearchRequestDto.builder()
+                    .text(textList)
+                    .size(5)
+                    .filter(filter)
+                    .build();
 
-//        List<SummarizedLessonDto> summarizedJhsLessonDtoList = getAllSummarizedJhsLesson();
-//        for(SummarizedLessonDto summarizedJhsLessonDto : summarizedJhsLessonDtoList) {
-//            List<OriginLessonDto> originJhsLessonDtoList = getAllOriginJhsLessons(summarizedJhsLessonDto.getLesson_id_k());
-//            ScriptDto scriptDto = OriginLessonToScript(summarizedJhsLessonDto, originJhsLessonDtoList.get(0));
-//            scriptDto.setORIGIN_SCRIPT(getOriginScriptContent(scriptDto.getLECT_ID()));
-//            //log.info("jhs scriptDto :{}", scriptDto);
-//            scriptDtoList.add(scriptDto);
-//        }
-
-        List<SummarizedLessonDto> summarizedHscLessonDtoList = getAllSummarizedHscLesson();
-        for(SummarizedLessonDto summarizedHscLessonDto : summarizedHscLessonDtoList) {
-            List<OriginLessonDto> originHscLessonDtoList = getAllOriginHscLessons(summarizedHscLessonDto.getLesson_id_k());
-            ScriptDto scriptDto = OriginLessonToScript(summarizedHscLessonDto, originHscLessonDtoList.get(0));
-            scriptDto.setORIGIN_SCRIPT(getOriginScriptContent(scriptDto.getLECT_ID()));
-            //log.info("hsc scriptDto :{}", scriptDto);
-            scriptDtoList.add(scriptDto);
+            String url = "http://172.20.70.52:59200/summarized_script/_query";
+            RestTemplate restTemplate = new RestTemplate();
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_JSON);
+            HttpEntity<SearchRequestDto> requestEntity = new HttpEntity<>(searchRequestDto, headers);
+            try {
+                ResponseEntity<SearchResponseDto> response = restTemplate.exchange(url, HttpMethod.POST, requestEntity, SearchResponseDto.class);
+                SearchResponseDto searchResponseDto = response.getBody();
+                CsvResponseDto csvResponseDto = CsvResponseDto.fromSearchResponse(searchResponseDto);
+                csvResponseDtoList.add(csvResponseDto);
+            } catch (Exception e) {
+                log.info("Exception: {}", e.getMessage());
+            }
         }
-
-
-        return scriptDtoList;
+        return csvResponseDtoList;
     }
 
-    public List<SummarizedLessonDto> getAllSummarizedJhsLesson() throws IOException {
-        ObjectMapper objectMapper = new ObjectMapper();
-        // 1. SearchRequest 생성
-        SearchRequest searchRequest = new SearchRequest("jhs_summarized_script_250115_v1");
-        searchRequest.source(new SearchSourceBuilder().query(QueryBuilders.matchAllQuery()).size(5000));
+    public void putVSdata() throws Exception {
+        List<LessonDto> originJhsLessonDtoList = getAllOriginJhsLesson();
+        List<LessonDto> originHscLessonDtoList = getAllOriginHscLesson();
+        List<LessonDto> summarizedLessonDtoList = getAllSummarizedLesson();
 
-        // 2. Elasticsearch 서버로 요청
-        SearchResponse response = devClient.search(searchRequest, RequestOptions.DEFAULT);
+        // 각 리스트를 lesson_id_k를 키로 하는 맵으로 변환
+        Map<String, LessonDto> jhsLessonMap = originJhsLessonDtoList.stream()
+                .collect(Collectors.toMap(LessonDto::getLesson_id_k, lesson -> lesson, (existing, replacement) -> existing));
 
-        // 3. 응답을 JhsLessonDocument 리스트로 변환
-        List<SummarizedLessonDto> documents = new ArrayList<>();
-        for (SearchHit hit : response.getHits().getHits()) {
-            SummarizedLessonDto document = objectMapper.readValue(hit.getSourceAsString(), SummarizedLessonDto.class);
-            documents.add(document);
+        Map<String, LessonDto> hscLessonMap = originHscLessonDtoList.stream()
+                .collect(Collectors.toMap(LessonDto::getLesson_id_k, lesson -> lesson, (existing, replacement) -> existing));
+
+        Map<String, LessonDto> summarizedLessonMap = summarizedLessonDtoList.stream()
+                .collect(Collectors.toMap(LessonDto::getLesson_id_k, lesson -> lesson, (existing, replacement) -> existing));
+
+        // 모든 키를 합친 Set 생성
+        Set<String> allKeys = new HashSet<>();
+        allKeys.addAll(jhsLessonMap.keySet());
+        allKeys.addAll(hscLessonMap.keySet());
+        allKeys.addAll(summarizedLessonMap.keySet());
+
+        // 결과 리스트 생성
+        List<LessonDto> mergedList = new ArrayList<>();
+
+        // 각 키에 대해 LessonDto 병합
+        for (String key : allKeys) {
+            LessonDto mergedLesson = new LessonDto();
+            mergedLesson.setLesson_id_k(key);
+
+            LessonDto jhsLesson = jhsLessonMap.get(key);
+            LessonDto hscLesson = hscLessonMap.get(key);
+            LessonDto summarizedLesson = summarizedLessonMap.get(key);
+
+            if (jhsLesson != null) {
+                mergedLesson.setOriginal_script(jhsLesson.getOriginal_script());
+            } else if (hscLesson != null) {
+                mergedLesson.setOriginal_script(hscLesson.getOriginal_script());
+            }
+
+            if (summarizedLesson != null) {
+                mergedLesson.setSummarized_script(summarizedLesson.getSummarized_script());
+            }
+
+            mergedList.add(mergedLesson);
         }
+        log.info("mergedList.size: {}", mergedList.size());
+        List<UpsertDto> upsertDtoList = new ArrayList<>();
+        for(LessonDto lessonDto : mergedList) {
+            List<OriginLessonDto> originLessonDtoList  =  getAllOriginJhsLessons(lessonDto.getLesson_id_k());
+            if(originLessonDtoList.isEmpty()) {
+                continue;
+            }
+            ScriptDto scriptDto = OriginLessonToScript(lessonDto, originLessonDtoList.get(0));
+            UpsertDto upsertDto = UpsertDto.from(scriptDto);
+            upsertDtoList.add(upsertDto);
+        }
+
+        log.info("upsertDtoList.size: {}", upsertDtoList.size());
+
+        for(UpsertDto upsertDto : upsertDtoList) {
+            String url = "http://172.20.70.52:59200/summarized_script/" + upsertDto.get_upsert().get_id();
+            RestTemplate restTemplate = new RestTemplate();
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_JSON);
+            HttpEntity<UpsertDto.Upsert> requestEntity = new HttpEntity<>(upsertDto.get_upsert(), headers);
+
+            try {
+                ResponseEntity<UpsertDto.Upsert> response = restTemplate.exchange(url, HttpMethod.POST, requestEntity, UpsertDto.Upsert.class);
+                log.info("객체 색인 성공");
+            } catch (Exception e) {
+                log.info("Exception: {}", e.getMessage());
+            }
+
+
+        }
+
+    }
+
+
+
+    public List<LessonDto> getAllOriginJhsLesson() throws IOException {
+        ObjectMapper objectMapper = new ObjectMapper();
+        List<LessonDto> documents = new ArrayList<>();
+
+        // SearchRequest 생성 및 스크롤 활성화
+        SearchRequest searchRequest = new SearchRequest("jhs_original_script_250312_v1");
+        searchRequest.scroll(TimeValue.timeValueMinutes(1L));
+        SearchSourceBuilder searchSourceBuilder = new SearchSourceBuilder();
+        searchSourceBuilder.query(QueryBuilders.matchAllQuery());
+        searchSourceBuilder.size(1000); // 한 번에 가져올 문서 수
+        searchRequest.source(searchSourceBuilder);
+
+        // 첫 번째 스크롤 요청
+        SearchResponse searchResponse = devClient.search(searchRequest, RequestOptions.DEFAULT);
+        String scrollId = searchResponse.getScrollId();
+        SearchHit[] searchHits = searchResponse.getHits().getHits();
+
+        // 문서 처리
+        while (searchHits != null && searchHits.length > 0) {
+            for (SearchHit hit : searchHits) {
+                LessonDto document = objectMapper.readValue(hit.getSourceAsString(), LessonDto.class);
+                documents.add(document);
+            }
+
+            // 다음 스크롤 요청
+            SearchScrollRequest scrollRequest = new SearchScrollRequest(scrollId);
+            scrollRequest.scroll(TimeValue.timeValueMinutes(1L));
+            searchResponse = devClient.scroll(scrollRequest, RequestOptions.DEFAULT);
+            scrollId = searchResponse.getScrollId();
+            searchHits = searchResponse.getHits().getHits();
+        }
+
+        // 스크롤 컨텍스트 삭제
+        ClearScrollRequest clearScrollRequest = new ClearScrollRequest();
+        clearScrollRequest.addScrollId(scrollId);
+        devClient.clearScroll(clearScrollRequest, RequestOptions.DEFAULT);
 
         return documents;
     }
 
 
+
+
+
+    public List<LessonDto> getAllOriginHscLesson() throws IOException {
+        ObjectMapper objectMapper = new ObjectMapper();
+        List<LessonDto> documents = new ArrayList<>();
+
+        // SearchRequest 생성 및 스크롤 활성화
+        SearchRequest searchRequest = new SearchRequest("hsc_original_script_250312_v1");
+        searchRequest.scroll(TimeValue.timeValueMinutes(1L));
+        SearchSourceBuilder searchSourceBuilder = new SearchSourceBuilder();
+        searchSourceBuilder.query(QueryBuilders.matchAllQuery());
+        searchSourceBuilder.size(1000); // 한 번에 가져올 문서 수
+        searchRequest.source(searchSourceBuilder);
+
+        // 첫 번째 스크롤 요청
+        SearchResponse searchResponse = devClient.search(searchRequest, RequestOptions.DEFAULT);
+        String scrollId = searchResponse.getScrollId();
+        SearchHit[] searchHits = searchResponse.getHits().getHits();
+
+        // 문서 처리
+        while (searchHits != null && searchHits.length > 0) {
+            for (SearchHit hit : searchHits) {
+                LessonDto document = objectMapper.readValue(hit.getSourceAsString(), LessonDto.class);
+                documents.add(document);
+            }
+
+            // 다음 스크롤 요청
+            SearchScrollRequest scrollRequest = new SearchScrollRequest(scrollId);
+            scrollRequest.scroll(TimeValue.timeValueMinutes(1L));
+            searchResponse = devClient.scroll(scrollRequest, RequestOptions.DEFAULT);
+            scrollId = searchResponse.getScrollId();
+            searchHits = searchResponse.getHits().getHits();
+        }
+
+        // 스크롤 컨텍스트 삭제
+        ClearScrollRequest clearScrollRequest = new ClearScrollRequest();
+        clearScrollRequest.addScrollId(scrollId);
+        devClient.clearScroll(clearScrollRequest, RequestOptions.DEFAULT);
+
+        return documents;
+    }
+
+
+    public List<LessonDto> getAllSummarizedLesson() throws IOException {
+        ObjectMapper objectMapper = new ObjectMapper();
+        List<LessonDto> documents = new ArrayList<>();
+
+        // SearchRequest 생성 및 스크롤 활성화
+        SearchRequest searchRequest = new SearchRequest("summarized_script_250312_v1");
+        searchRequest.scroll(TimeValue.timeValueMinutes(1L));
+        SearchSourceBuilder searchSourceBuilder = new SearchSourceBuilder();
+        searchSourceBuilder.query(QueryBuilders.matchAllQuery());
+        searchSourceBuilder.size(1000); // 한 번에 가져올 문서 수
+        searchRequest.source(searchSourceBuilder);
+
+        // 첫 번째 스크롤 요청
+        SearchResponse searchResponse = devClient.search(searchRequest, RequestOptions.DEFAULT);
+        String scrollId = searchResponse.getScrollId();
+        SearchHit[] searchHits = searchResponse.getHits().getHits();
+
+        // 문서 처리
+        while (searchHits != null && searchHits.length > 0) {
+            for (SearchHit hit : searchHits) {
+                LessonDto document = objectMapper.readValue(hit.getSourceAsString(), LessonDto.class);
+                documents.add(document);
+            }
+
+            // 다음 스크롤 요청
+            SearchScrollRequest scrollRequest = new SearchScrollRequest(scrollId);
+            scrollRequest.scroll(TimeValue.timeValueMinutes(1L));
+            searchResponse = devClient.scroll(scrollRequest, RequestOptions.DEFAULT);
+            scrollId = searchResponse.getScrollId();
+            searchHits = searchResponse.getHits().getHits();
+        }
+
+        // 스크롤 컨텍스트 삭제
+        ClearScrollRequest clearScrollRequest = new ClearScrollRequest();
+        clearScrollRequest.addScrollId(scrollId);
+        devClient.clearScroll(clearScrollRequest, RequestOptions.DEFAULT);
+
+        return documents;
+    }
 
     public List<OriginLessonDto> getAllOriginJhsLessons(String lesson_id_k) throws IOException {
         ObjectMapper objectMapper = new ObjectMapper();
         // 1. SearchRequest 생성
-        SearchRequest searchRequest = new SearchRequest("v1-jhs_lesson_concept-20250114");
-        searchRequest.source(new SearchSourceBuilder().query(QueryBuilders.termQuery("lesson_id_k", lesson_id_k)).size(5000));
+        SearchRequest searchRequest = new SearchRequest("v1-jhs_lesson_concept-20250204", "v1-hsc_lesson_concept-20250204");
+        searchRequest.source(new SearchSourceBuilder().query(QueryBuilders.termQuery("lesson_id_k", lesson_id_k)).size(1000));
 
         // 2. Elasticsearch 서버로 요청
         SearchResponse response = prdClient.search(searchRequest, RequestOptions.DEFAULT);
@@ -100,47 +300,8 @@ public class MainService {
     }
 
 
-    public List<SummarizedLessonDto> getAllSummarizedHscLesson() throws IOException {
-        ObjectMapper objectMapper = new ObjectMapper();
-        // 1. SearchRequest 생성
-        SearchRequest searchRequest = new SearchRequest("hsc_summarized_script_250115_v1");
-        searchRequest.source(new SearchSourceBuilder().query(QueryBuilders.matchAllQuery()).size(5000));
 
-        // 2. Elasticsearch 서버로 요청
-        SearchResponse response = devClient.search(searchRequest, RequestOptions.DEFAULT);
-
-        // 3. 응답을 JhsLessonDocument 리스트로 변환
-        List<SummarizedLessonDto> documents = new ArrayList<>();
-        for (SearchHit hit : response.getHits().getHits()) {
-            SummarizedLessonDto document = objectMapper.readValue(hit.getSourceAsString(), SummarizedLessonDto.class);
-            documents.add(document);
-        }
-
-        return documents;
-    }
-
-
-
-    public List<OriginLessonDto> getAllOriginHscLessons(String lesson_id_k) throws IOException {
-        ObjectMapper objectMapper = new ObjectMapper();
-        // 1. SearchRequest 생성
-        SearchRequest searchRequest = new SearchRequest("v1-hsc_lesson_concept-20250114");
-        searchRequest.source(new SearchSourceBuilder().query(QueryBuilders.termQuery("lesson_id_k", lesson_id_k)).size(5000));
-
-        // 2. Elasticsearch 서버로 요청
-        SearchResponse response = prdClient.search(searchRequest, RequestOptions.DEFAULT);
-
-        // 3. 응답을 HscLessonDocument 리스트로 변환
-        List<OriginLessonDto> documents = new ArrayList<>();
-        for (SearchHit hit : response.getHits().getHits()) {
-            OriginLessonDto document = objectMapper.readValue(hit.getSourceAsString(), OriginLessonDto.class);
-            documents.add(document);
-        }
-
-        return documents;
-    }
-
-    public ScriptDto OriginLessonToScript(SummarizedLessonDto summarizedLessonDto, OriginLessonDto originLessonDto) {
+    public ScriptDto OriginLessonToScript(LessonDto lessonDto, OriginLessonDto originLessonDto) {
         String fmySiteDsCd = null;
         String prbmCatId = null;
 
@@ -159,46 +320,18 @@ public class MainService {
         }
 
         return ScriptDto.builder()
-                .FMY_SITE_DS_CD(fmySiteDsCd)
-                .COURSE_ID(originLessonDto.getSbjt_id_k())
-                .LECT_ID(summarizedLessonDto.getLesson_id_k())
-                .SUMRY_CNTN(summarizedLessonDto.getSummarized_script())
-                .PRBM_CAT_ID(prbmCatId)
+                .site_id(fmySiteDsCd)
+                .sbjt_id_k(originLessonDto.getSbjt_id_k())
+                .sbjt_name_kskn(originLessonDto.getSbjt_name_kskn())
+                .lesson_id_k(lessonDto.getLesson_id_k())
+                .lesson_name_kskn(originLessonDto.getLesson_name_kskn())
+                .original_script(lessonDto.getOriginal_script())
+                .summarized_script(lessonDto.getSummarized_script())
                 .build();
     }
 
 
-    public String getOriginScriptContent(String code) throws IOException {
-        String directoryPath = ""; // 파일 경로
-        File directory = new File(directoryPath);
-        String content = null;
-        // 파일 이름 패턴
-        Pattern pattern = Pattern.compile("_[A-Z0-9]+\\.smi"); // "_" 다음에 영문 대문자 또는 숫자, ".smi"로 끝나는 패턴
 
-        if (directory.isDirectory()) {
-            for (File file : directory.listFiles()) {
-                String fileName = file.getName();
-                Matcher matcher = pattern.matcher(fileName);
 
-                if (matcher.find() && fileName.contains("_" + code + ".smi")) { // 코드와 일치하는 파일 찾기
 
-                    try {
-                        content = Files.readString(file.toPath(), StandardCharsets.UTF_8); // 파일 내용 읽어오기
-                        content = content.replaceAll("(?s)<!--.*?-->", "").replaceAll("<.*?>", "").replaceAll("&.*?;", "");
-                        content = content.replaceAll("[\\r\\n]+", " ");
-                        content = content.replaceAll("\"", "'");
-                        content = content.replaceAll("\t", "");
-                        content = content.replace(",", "");
-                    } catch (Exception e) {
-                        log.info("error: {}, code: {}", e, code);
-                    }
-                }
-            }
-        }
-        if(StringUtils.isEmpty(content)) {
-            log.info("no origin file... code: {}", code);
-        }
-
-        return content; // 파일을 찾지 못한 경우 null 반환
-    }
 }
