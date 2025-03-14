@@ -39,6 +39,7 @@ public class MainController {
         // 데이터 작성
         for (CsvResponseDto csvResponseDto : csvResponseDtoList) {
             String originalScript = csvResponseDto.getOriginal_script();
+            originalScript.replaceAll("\t", "").replaceAll("\n", "");
             if (originalScript != null && originalScript.length() > 30000) {
                 originalScript = originalScript.substring(0, 30000);
             }
